@@ -23,7 +23,7 @@
         # The JQ script is stored in a shell variable for clarity
         JQ_SCRIPT='
         .nodes as $nodes |
-        # 1. CALCULATE THE CANONICAL MAP ($map)
+        # 1. CALCULATE THE CANONICAL MAP ($map) 
         (
           $nodes | to_entries |
           group_by(.value.locked.type + "_" + (.value.locked.narHash // .value.locked.path // "no-hash-no-path")) |
@@ -31,9 +31,7 @@
           reduce .[] as $group ({}; . + ($group.members | map({(.): $group.canonical}) | add))
         ) as $map |
 
-        # 2. IDENTIFY ALL CANONICAL TARGETS (Phase 2 not strictly needed for DOT generation, removed for brevity/simplicity)
-
-        # 3. GENERATE AND STORE EDGES ($edges_array)
+        # 2. GENERATE AND STORE EDGES ($edges_array)
         (
           $nodes | to_entries |
           map(
@@ -56,7 +54,7 @@
           unique
         ) as $edges_array |
 
-        # 4. ASSEMBLE DOT FILE CONTENT
+        # 3. ASSEMBLE DOT FILE CONTENT
         [
           "digraph flake_dependencies {\n  rankdir=LR;\n"
         ] +
