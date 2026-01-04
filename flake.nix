@@ -20,64 +20,61 @@
 
       # The shell script that contains your logic
       dependency-script = pkgs.writeShellScriptBin "gen-dep-graph" ''
-        # The JQ script is stored in a shell variable for clarity
-        JQ_SCRIPT='
-        .nodes as $nodes |
-        # 1. CALCULATE THE CANONICAL MAP ($map) 
-        (
-          $nodes | to_entries |
-          group_by(.value.locked.type + "_" + (.value.locked.narHash // .value.locked.path // "no-hash-no-path")) |
-          map({canonical: .[0].key, members: map(.key)}) |
-          reduce .[] as $group ({}; . + ($group.members | map({(.): $group.canonical}) | add))
-        ) as $map |
-
-        # 2. GENERATE AND STORE EDGES ($edges_array)
-        (
-          $nodes | to_entries |
-          map(
-            select(.value.inputs != null) |
-            . as $p |
-            .value.inputs |
-            to_entries |
-            map(
-              .key as $alias |
-              .value as $dep_id |
-
-              # Determine the single target ID for canonicalization (same logic as Phase 2)
-              ($dep_id | if type == "array" then $alias else $dep_id end) as $target_id |
-
-              # Build the edge: Source (canonical) -> Target (canonical)
-              "  \"\( ($map[$p.key] // $p.key) )\" -> \"\( ($map[$target_id] // $target_id) )\""
-            )
-          ) |
-          flatten |
-          unique
-        ) as $edges_array |
-
-        # 3. ASSEMBLE DOT FILE CONTENT
-        [
-          "digraph flake_dependencies {\n  rankdir=LR;\n"
-        ] +
-        $edges_array +
-        [
-          "\n}"
-        ] |
-        join("\n")
-        '
-
-        # Check if flake.lock exists
-        if [ ! -f "flake.lock" ]; then
-          echo "Error: flake.lock not found in the current directory." >&2
-          exit 1
-        fi
+        set -e
 
         OUTPUT_DOT="flake-dependencies.dot"
         OUTPUT_SVG="flake-dependencies.svg"
 
-        echo "--- Generating DOT file from flake.lock ---"
+        if [ ! -f "flake.lock" ]; then
+          echo "Error: flake.lock not found." >&2
+          exit 1
+        fi
 
-        # Use jq to generate the DOT content directly
-        cat flake.lock | ${pkgs.jq}/bin/jq -r "$JQ_SCRIPT" > "$OUTPUT_DOT"
+        # Phase 1: Extract basic nodes and inputs
+        PHASE1=$(cat flake.lock | ${pkgs.jq}/bin/jq -r '
+          .nodes | to_entries
+          | map({
+              key: .key,
+              value: (if .value.inputs then .value.inputs else null end)
+            })
+          | from_entries
+        ')
+
+        # Phase 2: Resolve follows
+        PHASE2=$(echo "$PHASE1" | ${pkgs.jq}/bin/jq -r '. as $map |
+          def resolve(map; parent_node; path):
+            if (path | type) == "string" then map[parent_node][path] 
+            elif (path | type) == "array" and (path | length) == 1 then map[parent_node][path[0]]
+            elif (path | type) == "array" then resolve(map; map[parent_node][path[0]]; path[1:])
+            else null end;
+
+          def deep_resolve(map; parent_node; initial_path):
+            initial_path | until((type != "array"); resolve(map; parent_node; .));
+
+          map_values(
+            if . == null then null
+            else map_values(if type == "array" then deep_resolve($map; "root"; .) else . end)
+            end
+          )
+        ')
+
+        # Phase 3: Assembly into DOT
+        echo "$PHASE2" | ${pkgs.jq}/bin/jq -r '
+          (
+            to_entries | map(
+              .key as $parent |
+              select(.value != null) |
+              .value | to_entries | map(
+                "  \"\($parent)\" -> \"\(.value)\""
+              )
+            ) | flatten | unique
+          ) as $edges_array |
+
+          [
+            "digraph flake_dependencies {\n  rankdir=LR;\n"
+          ] + $edges_array + ["\n}"] | join("\n")
+        ' > $OUTPUT_DOT
+
 
         echo "--- Converting DOT to SVG ---"
         # Use Graphviz (dot) to render the SVG image (-Tsvg)
