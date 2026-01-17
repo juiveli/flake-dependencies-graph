@@ -30,18 +30,15 @@
           exit 1
         fi
 
-        # Phase 1: Extract basic nodes and inputs
-        PHASE1=$(cat flake.lock | ${pkgs.jq}/bin/jq -r '
-          .nodes | to_entries
-          | map({
+        ${pkgs.jq}/bin/jq -r '
+          def clean_nodes:
+            .nodes | to_entries
+            | map({
               key: .key,
               value: (if .value.inputs then .value.inputs else null end)
             })
-          | from_entries
-        ')
+          | from_entries;
 
-        # Phase 2: Resolve follows
-        PHASE2=$(echo "$PHASE1" | ${pkgs.jq}/bin/jq -r '. as $map |
           def resolve(map; parent_node; path):
             if (path | type) == "string" then map[parent_node][path] 
             elif (path | type) == "array" and (path | length) == 1 then map[parent_node][path[0]]
@@ -51,16 +48,8 @@
           def deep_resolve(map; parent_node; initial_path):
             initial_path | until((type != "array"); resolve(map; parent_node; .));
 
-          map_values(
-            if . == null then null
-            else map_values(if type == "array" then deep_resolve($map; "root"; .) else . end)
-            end
-          )
-        ')
-
-        # Phase 3: Assembly into DOT
-        echo "$PHASE2" | ${pkgs.jq}/bin/jq -r '
-          (
+          def assembly_dot:
+            (
             to_entries | map(
               .key as $parent |
               select(.value != null) |
@@ -69,11 +58,17 @@
               )
             ) | flatten | unique
           ) as $edges_array |
+          ([ "digraph flake_dependencies {\n  rankdir=LR;\n" ] + $edges_array + ["\n}"]) | join("\n");
+          
+          clean_nodes as $map | $map |
 
-          [
-            "digraph flake_dependencies {\n  rankdir=LR;\n"
-          ] + $edges_array + ["\n}"] | join("\n")
-        ' > $OUTPUT_DOT
+          map_values(
+            if . == null then null
+            else map_values(if type == "array" then deep_resolve($map; "root"; .) else . end)
+            end
+          ) | assembly_dot
+
+        ' flake.lock > $OUTPUT_DOT
 
 
         echo "--- Converting DOT to SVG ---"
